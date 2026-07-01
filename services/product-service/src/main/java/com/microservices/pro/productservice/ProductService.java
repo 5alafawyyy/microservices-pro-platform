@@ -2,7 +2,6 @@ package com.microservices.pro.productservice;
 
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -19,43 +18,16 @@ import java.util.concurrent.atomic.AtomicLong;
 @Service
 public class ProductService {
 
-    // In-memory storage
-    private final Map<Long, Product> products = new ConcurrentHashMap<>();
+    // TODO 1: Inject a Map<Long, Product> as an in-memory store (no DB yet)
+    //         Hint: use ConcurrentHashMap for thread safety.
 
-    // Generates unique IDs
-    private final AtomicLong idGenerator = new AtomicLong(1);
+    // TODO 2: Implement findAll() returning List<Product>
 
+    // TODO 3: Implement findById(Long id) returning Optional<Product>
 
-    public List<Product> findAll() {
-        return new ArrayList<>(products.values());
-    }
+    // TODO 4: Implement save(Product product) returning the saved Product
+    //         Hint: if product.id() is null, assign one yourself before storing.
 
+    // TODO 5: Implement deleteById(Long id)
 
-    public Optional<Product> findById(Long id) {
-        return Optional.ofNullable(products.get(id));
-    }
-
-
-    public Product save(Product product) {
-
-        Product productToSave = product;
-
-        if (product.id() == null) {
-            productToSave = new Product(
-                    idGenerator.getAndIncrement(),
-                    product.name(),
-                    product.description(),
-                    product.price(),
-                    product.category()
-            );
-        }
-
-        products.put(productToSave.id(), productToSave);
-        return productToSave;
-    }
-
-
-    public void deleteById(Long id) {
-        products.remove(id);
-    }
 }

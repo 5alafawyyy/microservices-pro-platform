@@ -1,10 +1,6 @@
 package com.microservices.pro.productservice;
 
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.server.ResponseStatusException;
-
-import java.util.List;
 
 /**
  * ProductController — Session 1, Lab 1.
@@ -27,27 +23,12 @@ public class ProductController {
         this.productService = productService;
     }
 
-    @GetMapping
-    public List<Product> getAllProducts() {
-        return productService.findAll();
-    }
+    // TODO: GET /api/v1/products         → return all products
 
-    @GetMapping("/{id}")
-    public Product getProductById(@PathVariable Long id) {
-        return productService.findById(id)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-    }
+    // TODO: GET /api/v1/products/{id}    → return product by id (404 if not found)
 
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public Product createProduct(@RequestBody Product product) {
-        return productService.save(product);
-    }
+    // TODO: POST /api/v1/products        → create a new product (201 Created)
 
-    @DeleteMapping("/{id}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void deleteProduct(@PathVariable Long id) {
-        productService.deleteById(id);
-    }
+    // TODO: DELETE /api/v1/products/{id} → delete a product
 
 }
