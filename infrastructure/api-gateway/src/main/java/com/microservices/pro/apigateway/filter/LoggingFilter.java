@@ -12,7 +12,6 @@ import org.springframework.http.HttpStatusCode;
 
 /**
  * LoggingFilter — Session 2, Lab 2A, Task 2.
- *
  * GlobalFilter applied to ALL routes (not route-specific). Implement the
  * TODOs below. See docs/labs/session-02-lab-02.md for the full lab
  * instructions and acceptance criteria.
