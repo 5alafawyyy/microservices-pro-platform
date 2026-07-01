@@ -1,0 +1,46 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: order-service
+  config:
+    import: "optional:configserver:http://localhost:8888"
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+
+# Session 4: Resilience4j Configuration for Circuit Breaker and Retry
+resilience4j:
+  circuitbreaker:
+    instances:
+      paymentService:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
+  retry:
+    instances:
+      paymentService:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+        retry-exceptions:
+          - org.springframework.web.client.HttpServerErrorException
+          - org.springframework.web.client.ResourceAccessException
+          - java.lang.RuntimeException
+
+management:
+  health:
+    circuitbreakers:
+      enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,circuitbreakers

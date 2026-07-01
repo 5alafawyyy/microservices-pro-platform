@@ -215,3 +215,61 @@ Open separate terminals and run these in order:
 *   **Public Read:** `curl -v http://localhost:8080/api/v1/products` (Works instantly!)
 *   **Protected Write (No Token):** `curl -v -X POST http://localhost:8080/api/v1/products -d "{...}"` (Fails with `401 Unauthorized`)
 *   **Protected Write (Valid Token):** `curl -v -X POST -H "Authorization: Bearer <token>" http://localhost:8080/api/v1/products -d "{...}"` (Succeeds with `201 Created` and returns `X-RateLimit` headers!)
+
+---
+
+## 🛡️ Session 4: Resilience Patterns
+
+### The Problem: Cascading Failures
+Imagine Black Friday: 50,000 users place orders simultaneously. The Payment Service becomes very slow (taking 10 seconds). The Order Service uses all its threads waiting for the Payment Service. Now the Order Service is unresponsive. The Gateway then fails. One slow service brings down the **entire platform**. This is called a **Cascading Failure**.
+
+### The Solution: Circuit Breaker & Retry (Resilience4j)
+To protect our services, we use Resilience Patterns:
+1. **Circuit Breaker (Fail Fast):** If 50% of the last 10 calls fail, the Circuit Breaker "OPENS" and immediately rejects new calls without even trying to hit the Payment Service. This gives the Payment Service time to recover.
+2. **Fallback (Fail Safe):** When the Circuit Breaker is open, or a call fails, we provide a "Fallback" response (e.g., returning a `PENDING` order status instead of crashing).
+3. **Retry with Exponential Backoff:** For temporary network glitches, we automatically retry the call. We wait 500ms, then 1000ms, then 2000ms before giving up.
+
+### Session 4 Code Implementation
+
+**1. Payment Service (Port 8083)**
+We built a new `Payment Service` to simulate these failures. It uses a random number generator to randomly throw a `503 Service Unavailable` error based on a configurable `failure.rate`.
+
+**2. Order Service (Port 8082)**
+We created the `Order Service` which acts as the client calling the `Payment Service`.
+
+**Circuit Breaker & Retry Configuration (`application.yml`)**
+```yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      paymentService:
+        sliding-window-size: 10 # track last 10 calls
+        failure-rate-threshold: 50 # open if 50%+ fail
+        wait-duration-in-open-state: 5s # wait 5s before HALF-OPEN (testing recovery)
+  retry:
+    instances:
+      paymentService:
+        max-attempts: 3
+        wait-duration: 500ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+```
+
+**OrderService.java**
+We annotated our `createOrder` method so that every time it calls the `PaymentClient`, it is wrapped in a Retry and a Circuit Breaker.
+```java
+// Inside com.microservices.pro.orderservice.OrderService
+@CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+@Retry(name = "paymentService") // Retry wraps INSIDE CircuitBreaker
+public OrderResponse createOrder(OrderRequest request) {
+    PaymentResponse payment = paymentClient.processPayment(new PaymentRequest(request.getAmount()));
+    return new OrderResponse("CONFIRMED", payment.transactionId());
+}
+
+// Fallback: MUST match original params + Throwable as last param
+public OrderResponse paymentFallback(OrderRequest request, Throwable ex) {
+    log.warn("Payment failed, returning PENDING. Reason: {}", ex.getMessage());
+    return new OrderResponse("PENDING", "Will retry payment later");
+}
+```
+*Notice how the fallback returns `PENDING`. The user is never left hanging with an ugly 500 Server Error!*
