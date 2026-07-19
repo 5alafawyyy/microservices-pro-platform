@@ -1,34 +1,58 @@
 package com.microservices.pro.apigateway.filter;
 
 import com.microservices.pro.apigateway.security.JwtUtil;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtException;
+import io.jsonwebtoken.MalformedJwtException;
+import io.jsonwebtoken.security.SignatureException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
-import org.springframework.util.AntPathMatcher;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 
 /**
  * JwtAuthFilter — Session 3, "Custom Filters & JWT Validation".
  *
- * Implement the TODOs below. See docs/labs/session-03-lab-2b.md for the
- * full lab instructions and acceptance criteria.
+ * The Gateway validates the JWT — services behind it trust the Gateway and
+ * never re-validate tokens themselves (this filter IS the security boundary;
+ * see Session 3 docx 3.6, Daily Quiz Q6).
+ *
+ * Runs at HIGHEST_PRECEDENCE + 1 — one step after LoggingFilter
+ * (HIGHEST_PRECEDENCE), so every request is logged, including ones this
+ * filter rejects with 401.
+ *
+ * NOTE on PUBLIC_ROUTES: this repo's Product Service uses /api/v1/products
+ * (see Session 1/2) — the docx's literal example path is /api/products.
+ * The whitelist below matches this repo's actual route, not the docx's
+ * shorthand, per the 1:1 fidelity rule with the real running code.
  */
-@org.springframework.stereotype.Component
+@Component
 public class JwtAuthFilter implements GlobalFilter, Ordered {
 
-    private final AntPathMatcher pathMatcher = new AntPathMatcher();    
+    private final AntPathMatcher pathMatcher = new AntPathMatcher();
     private record PublicRoute(HttpMethod method, String pathPattern) {}
 
-    // TODO 1: Define PUBLIC_ROUTES list (at minimum: GET "/api/v1/products/**" — GET all and get by Id is public)
+    // Routes that do NOT require a JWT token.
+    // TODO (Session 3 homework): move this to application.yml via
+    // @ConfigurationProperties instead of hardcoding it here.
     private static final List<PublicRoute> PUBLIC_ROUTES = List.of(
-        new PublicRoute(HttpMethod.GET, "/api/v1/products/**")
+            new PublicRoute(HttpMethod.GET, "/api/v1/products/**"),    // GET all products & Get product by Id — public
+            new PublicRoute(HttpMethod.GET, "/actuator/health"),
+            new PublicRoute(HttpMethod.POST, "/actuator/info")
     );
 
     @Autowired
@@ -36,54 +60,75 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        // TODO 2: Implement filter() method:
-        //   - Skip validation for public routes
-        //   - Extract the Authorization header, expect "Bearer <token>"
-        //   - Return 401 if missing or invalid
-        //   - Validate the JWT via jwtUtil
-        //   - Add X-User-Id and X-User-Role headers from the JWT claims
-        //   - Forward the enriched request to the chain
-        String path = exchange.getRequest().getURI().getPath();
-        HttpMethod method = exchange.getRequest().getMethod();
+        ServerHttpRequest request = exchange.getRequest();
+        HttpMethod method = request.getMethod();
+        String path = request.getURI().getPath();
 
-        boolean isPublic = PUBLIC_ROUTES.stream().anyMatch(route -> 
-            route.method().equals(method) && pathMatcher.match(route.pathPattern(), path)
-        );
-
-        if (isPublic) {
+        // Step 1: Skip validation for public routes
+        if (isPublicRoute(method, path)) {
             return chain.filter(exchange);
         }
 
-        String authHeader = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+        // Step 2: Extract Authorization header
+        String authHeader = request.getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-            return exchange.getResponse().setComplete();
+            return unauthorizedResponse(exchange, "Missing or invalid Authorization header");
         }
 
+        // Step 3: Validate JWT
         String token = authHeader.substring(7);
-        if (!jwtUtil.isTokenValid(token)) {
-            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-            return exchange.getResponse().setComplete();
+        try {
+            Claims claims = jwtUtil.validateToken(token);
+            String userId = claims.getSubject();
+            String role = claims.get("role", String.class);
+            if (role == null || role.isBlank()) {
+                return unauthorizedResponse(exchange, "Token does not contain role claim");
+            }
+
+            // Step 4: Enrich request with user info for downstream services
+            ServerHttpRequest enrichedRequest = exchange.getRequest().mutate().headers(headers -> {
+                headers.remove("X-User-Id");
+                headers.remove("X-User-Role");
+                headers.add("X-User-Id", userId);
+                headers.add("X-User-Role", role);
+            }).build();
+
+            return chain.filter(exchange.mutate().request(enrichedRequest).build());
+        } catch (ExpiredJwtException e) {
+            return unauthorizedResponse(exchange, "Token expired: " + e.getMessage());
+        } catch (MalformedJwtException e) {
+            return unauthorizedResponse(exchange, "Malformed token: " + e.getMessage());
+        } catch (SignatureException e) {
+            return unauthorizedResponse(exchange, "Invalid signature: " + e.getMessage());
+        } catch (JwtException e) {
+            return unauthorizedResponse(exchange, "Invalid token: " + e.getMessage());
         }
+    }
 
-        var claims = jwtUtil.validateToken(token);
-        String userId = claims.getSubject();
-        String role = claims.get("role", String.class);
+    private boolean isPublicRoute(HttpMethod method, String path) {
+        return PUBLIC_ROUTES.stream().anyMatch(route ->
+                route.method().equals(method)
+                        && pathMatcher.match(route.pathPattern(), path)
+        );
+    }
 
-        ServerWebExchange mutatedExchange = exchange.mutate()
-            .request(exchange.getRequest().mutate()
-                .header("X-User-Id", userId)
-                .header("X-User-Role", role)
-                .build())
-            .build();
-
-        return chain.filter(mutatedExchange);
+    private Mono<Void> unauthorizedResponse(ServerWebExchange exchange, String message) {
+        ServerHttpResponse response = exchange.getResponse();
+        response.setStatusCode(HttpStatus.UNAUTHORIZED);
+        response.getHeaders().add(HttpHeaders.CONTENT_TYPE, "application/json");
+        String body = """
+                {
+                "status": 401,
+                "error": "Unauthorized",
+                "message": "%s"
+                }
+                """.formatted(message);
+        DataBuffer buffer = response.bufferFactory().wrap(body.getBytes(StandardCharsets.UTF_8));
+        return response.writeWith(Mono.just(buffer));
     }
 
     @Override
     public int getOrder() {
-        // TODO 3: Return Ordered.HIGHEST_PRECEDENCE + 1
-        //         (must run AFTER LoggingFilter, which is HIGHEST_PRECEDENCE)
-        return Ordered.HIGHEST_PRECEDENCE + 1;
+        return Ordered.HIGHEST_PRECEDENCE + 1; // runs after LoggingFilter
     }
 }
